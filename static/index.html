@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FieldDay — touch grass at the right hour</title>
+<style>
+:root{color-scheme:light}*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;margin:0;background:#f3f7ef;color:#1d2b1f}
+main{max-width:560px;margin:0 auto;padding:16px 16px 64px}
+h1{font-size:28px;margin:8px 0 2px}.sub{color:#4c6b50;margin:0 0 16px}
+.card{background:#fff;border-radius:16px;padding:16px;box-shadow:0 2px 10px rgba(30,60,30,.08);margin:12px 0}
+.best{border:2px solid #3d8b40}.score{font-size:44px;font-weight:800;color:#2e7d32}
+.row{display:flex;gap:8px}.row input{flex:1;padding:12px;border-radius:12px;border:1px solid #c9d8c9;font-size:16px}
+button{background:#2e7d32;color:#fff;border:0;border-radius:12px;padding:12px 16px;font-size:16px;font-weight:700;cursor:pointer}
+button:disabled{opacity:.5}.ghost{background:#e8f0e8;color:#2e7d32}
+.hour{display:flex;justify-content:space-between;padding:10px 4px;border-bottom:1px solid #eef2ee;font-size:15px}
+.pill{border-radius:999px;padding:2px 10px;font-weight:700;font-size:13px}
+.hi{background:#dff2df;color:#1b6b1f}.mid{background:#fff4d6;color:#8a6d00}.lo{background:#fbe3e3;color:#a33}
+.small{font-size:13px;color:#5c755e}.streak{font-size:15px;font-weight:700}
+select,input[type=number]{padding:10px;border-radius:10px;border:1px solid #c9d8c9;font-size:15px;width:100%}
+label{font-size:13px;color:#4c6b50;display:block;margin:8px 0 2px}
+</style>
+</head>
+<body><main>
+<h1>🌿 FieldDay</h1>
+<p class="sub">The allergy-smart grass window. One screen, then go outside.</p>
+
+<div class="card">
+<div class="row">
+<input id="city" placeholder="City — e.g. Hanoi, Berlin, Austin" value="Hanoi">
+<button id="go">Go</button>
+</div>
+<p class="small" id="status">Free weather + pollen data, no sign-up. Your symptom log stays on this device.</p>
+</div>
+
+<div class="card best" id="bestCard" hidden>
+<div class="small">BEST GRASS WINDOW</div>
+<div class="score" id="bestScore">–</div>
+<div id="bestTime" style="font-weight:700"></div>
+<p id="bestWhy"></p>
+<p class="small" id="bestMeta"></p>
+<button id="wentBtn" class="ghost">✅ I touched grass (+1 streak)</button>
+</div>
+
+<div class="card"><b>Next good hours</b><div id="hours"></div></div>
+
+<div class="card">
+<b>Log symptoms (trains your forecast)</b>
+<label>Hour (0–23)</label><input id="lHour" type="number" min="0" max="23" value="9">
+<label>Symptoms 0 none – 3 bad</label><input id="lSym" type="number" min="0" max="3" value="0">
+<label>Pollen 0–5 (from card above)</label><input id="lPol" type="number" min="0" max="5" value="2">
+<button id="logBtn">Save log</button>
+<p class="small" id="logMsg"></p>
+<p class="streak">🔥 Streak: <span id="streak">0</span> grass touches</p>
+</div>
+<p class="small">Wellness info only, not medical advice. Open-weight AI (Gemma local + TabPFN) at the core.</p>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let last=null;
+$('streak').textContent=localStorage.getItem('fd_streak')||0;
+function pill(v){return v>=70?'<span class="pill hi">'+v+'</span>':v>=45?'<span class="pill mid">'+v+'</span>':'<span class="pill lo">'+v+'</span>'}
+async function explain(city,best,rs){
+  try{const r=await fetch('/api/explain',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({city,best,risk_source:rs})});const j=await r.json();return j.text+(j.source==='gemma3-local'?'':'')}catch(e){return ''}
+}
+$('go').onclick=async()=>{
+  const city=$('city').value.trim();if(!city)return;
+  $('go').disabled=true;$('status').textContent='Looking up '+city+'…';
+  try{
+    const g=await(await fetch('/api/geocode?name='+encodeURIComponent(city))).json();
+    if(!g.results||!g.results.length)throw new Error('city?');
+    const{latitude:lat,longitude:lon,name,country}=g.results[0];
+    $('status').textContent='Scoring daylight hours near '+name+', '+(country||'')+'…';
+    const w=await(await fetch(`/api/grass-window?lat=${lat}&lon=${lon}`)).json();
+    if(!w.best)throw new Error('no-data');
+    last={city:name,w};const b=w.best;
+    $('bestCard').hidden=false;$('bestScore').textContent=b.combined;
+    $('bestTime').textContent='☀️ '+b.time.replace('T',' ')+' — '+b.temp_c+'°C';
+    $('bestWhy').textContent='Loading coach note…';
+    $('bestWhy').textContent=await explain(name,b,b.risk_source);
+    $('bestMeta').textContent=`grass ${b.grass} · flare risk ${b.flare_risk} (${b.risk_source}, ${w.risk_rows} rows) · pollen ${b.pollen_index}/5 · wind ${b.wind_kph} kph`;
+    $('hours').innerHTML=w.hours.slice(0,8).map(h=>`<div class="hour"><span>${h.time.slice(5).replace('T',' ')} · ${h.temp_c}°C · risk ${h.flare_risk}</span>${pill(h.combined)}</div>`).join('');
+    $('lPol').value=b.pollen_index;$('lHour').value=b.hour;
+    $('status').textContent='Done. Screen off — go outside.';
+  }catch(e){$('status').textContent='Hmm, that lookup failed. Try another city spelling.'}
+  $('go').disabled=false;
+};
+$('logBtn').onclick=async()=>{
+  const body={hour:+$('lHour').value,symptoms:+$('lSym').value,pollen_index:+$('lPol').value};
+  const r=await fetch('/api/log',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  $('logMsg').textContent=r.ok?'Saved — your next forecast just got smarter.':'Save failed.';
+};
+$('wentBtn').onclick=()=>{const s=(+localStorage.getItem('fd_streak')||0)+1;localStorage.setItem('fd_streak',s);$('streak').textContent=s;};
+</script>
+</body></html>
