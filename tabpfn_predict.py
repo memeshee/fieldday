@@ -7,6 +7,11 @@ when there are fewer than 10 logged rows.
 import csv
 import os
 
+# Free one-time setup for genuine TabPFN inference:
+# 1. Log in at https://ux.priorlabs.ai, accept the license (Licenses tab)
+# 2. Copy API key from https://ux.priorlabs.ai/account
+# 3. export TABPFN_TOKEN="<key>"  (tabpfn reads it automatically)
+
 FEATURES = ["hour", "temp_c", "pollen_index", "wind_kph"]
 TARGET_CUT = 2  # symptoms >= 2 counts as a flare
 
