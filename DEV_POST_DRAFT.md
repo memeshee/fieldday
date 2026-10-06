@@ -36,6 +36,16 @@ own symptom history.
 - Fine-tunable: more logs → sharper personal boundary (e.g. "your kid flares
   above pollen 3 + wind 15, not the generic index").
 
+## Images (stock, illustrative — NOT field-test evidence)
+- Hero/wide: family lakeside picnic day —
+  https://thumb.wikimedia.org/wikipedia/commons/thumb/f/fa/Family_Picnic_Near_Orchard_Point_Marina.jpg/1280px-Family_Picnic_Near_Orchard_Point_Marina.jpg
+  (Rick Obst, CC BY 2.0, via Wikimedia Commons)
+- In-post/portrait: kids under a blossoming tree, Central Park (peak pollen irony) —
+  https://thumb.wikimedia.org/wikipedia/commons/thumb/6/62/Children_playing_under_a_blossoming_tree%2C_Central_Park%2C_NYC.jpg/1280px-Children_playing_under_a_blossoming_tree%2C_Central_Park%2C_NYC.jpg
+  (Peter Salanki, CC BY 2.0, via Wikimedia Commons)
+- Rule: these illustrate the problem/audience only. The field-test section
+  below must use our own real photos, or the entry loses credibility.
+
 ## I took it outside (field test + photos)
 - <DATE>: <CITY> — went at <BEST HOUR>, score <X>, risk <Y>. Result: <...>
 - <DATE>: control — went at a low-score hour. Result: <...>
