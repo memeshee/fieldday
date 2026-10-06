@@ -1,43 +1,54 @@
-# FieldDay: the allergy-smart grass window
+---
+title: FieldDay: the allergy-smart grass window
+published: true
+tags: devchallenge, hf26challenge
+---
 
-FieldDay tells allergy families the single best hour to go outside today.
-Entering: Overall + Best Use of TabPFN + Best Use of Gemma + Best Use of Render.
+*This is a submission for the [Hacktoberfest Open-Source AI Challenge Week 1: Touch Grass](https://dev.to/challenges/hacktoberfest-week1-2026-10-05)*
 
-**Live:** https://fieldday-r66v.onrender.com · **Code:** https://github.com/memeshee/fieldday
+## What I Built
+
+FieldDay tells allergy families the single best hour to go outside today — then gets out of the way. Parents of sneezy kids currently check three apps (weather, AQI, pollen) and guess; guess wrong and the evening is miserable. FieldDay fuses forecast + pollen + YOUR symptom history into one 0–100 score per daylight hour, explains the pick in warm parent-language, and fits in one mobile screen. Sixty seconds, then screen off — that's the whole point of Touch Grass.
 
 ![Family picnic day by the lake](https://thumb.wikimedia.org/wikipedia/commons/thumb/f/fa/Family_Picnic_Near_Orchard_Point_Marina.jpg/1280px-Family_Picnic_Near_Orchard_Point_Marina.jpg)
 *The whole point: more days like this. (Rick Obst, CC BY 2.0, via Wikimedia Commons)*
 
-## Who it's for
-
-Parents who keep kids inside on high-pollen days because guessing wrong = a miserable sneezing evening. Current workaround: check 3 apps (weather, AQI, pollen) and guess. FieldDay fuses them into one score, personalized by your own symptom history.
-
 ![Kids playing under a blossoming tree](https://thumb.wikimedia.org/wikipedia/commons/thumb/6/62/Children_playing_under_a_blossoming_tree%2C_Central_Park%2C_NYC.jpg/1280px-Children_playing_under_a_blossoming_tree%2C_Central_Park%2C_NYC.jpg)
 *Beautiful — and exactly what triggers the sneezes. (Peter Salanki, CC BY 2.0, via Wikimedia Commons)*
 
-## How it works (60 seconds, then screen off)
+## Demo
 
-1. Type your city → geocoded, free forecast + pollen data, no key, no account.
-2. Every remaining daylight hour scores 0–100 (temp curve around 21°C, rain, wind, UV, storm codes) MINUS your personal flare risk × 60.
-3. Flare risk comes from TabPFN, the tabular foundation model, fitted on YOUR symptom log — not a generic county pollen number. Your browser gets a random anonymous ID, so your taps train your forecast and nobody else's.
-4. Gemma (open weights) explains the pick in warm plain language. Chain: local Ollama → hosted Gemma → labeled template fallback, and the UI always shows which source wrote the note — no silent fallbacks.
-5. Big green card = the answer. Log symptoms in 3 taps, streak counter for every real outing. Real PWA (manifest + offline app shell), mobile-first.
+**Live:** https://fieldday-r66v.onrender.com (free Render tier, PWA — installable, works from the home screen)
 
-## Why open beats closed here
+Tested live Oct 6, Hanoi, straight from the production API: best window 08:00 local (score 76/100, personal flare risk 0.227 via TabPFN on 48 rows), worst 35/100 later in the week. Every hour is labeled with the model that scored it. Outdoor verification with photos lands this week — updating this post.
 
-- Symptom logs are health-adjacent. They must never train someone else's closed model or require an account. TabPFN inference sees anonymized rows (hour, temp, pollen, wind) and never trains on them; Gemma runs on open weights, local-first.
-- $0 to run. Swap the model without rewriting anything.
-- Fine-tunable: more logs → sharper personal boundary (e.g. "your kid flares above pollen 3 + wind 15, not the generic index").
+## Code
 
-## Tested live today
+https://github.com/memeshee/fieldday
 
-Oct 6, Hanoi, straight from the production API: best window 08:00 local (score 76/100, personal flare risk 0.227 via TabPFN on 48 rows), worst 35/100 later in the week. Every hour labeled with the model that scored it. Outdoor verification with photos lands this week — updating this post.
+FastAPI + vanilla JS, one-click deploy via `render.yaml`, 6 smoke tests with CI.
 
-## Build notes
+## How I Built It
 
-- Stack: FastAPI + vanilla JS PWA, Render free tier, tabpfn-client (lightweight, no torch), Ollama gemma3:1b local + hosted Gemma fallback, pytest smoke CI.
-- Hardest part: latency. First version called TabPFN once per daylight hour — 7s × 24 hours, guaranteed timeout. Fixed by fitting once and batch-predicting all hours in one call, then caching the fitted predictor keyed on the training-data fingerprint so warm requests skip re-fit entirely (37s → 1.3s in prod). Second hardest: surviving Open-Meteo throttling Render's shared IP — retry + 30-min upstream cache + an honestly-labeled MET Norway backup feed. Third: making every AI output honestly labeled — risk_source and coach source are shown in the UI, including when it's "just" the baseline.
+Open-source AI is the core, not a garnish:
 
-## What's next
+- **TabPFN (Prior Labs tabular foundation model)** predicts personal flare risk fitted on YOUR symptom log — not a generic county pollen number. Your browser gets a random anonymous ID, so your taps train your forecast and nobody else's. Lightweight `tabpfn-client` so Render's free tier never OOMs; self-hosters can swap in local `tabpfn` with zero code changes.
+- **Gemma (open weights)** writes the coach note. Chain: local Ollama `gemma3:1b` → hosted Gemma via Gemini API → labeled template fallback. The UI always names which source wrote the note — no silent fallbacks.
+- **Free keyless data:** Open-Meteo forecast + pollen, geocoding included.
 
-Voice "go now" nudge, household profiles, fully-offline forecast cache.
+Hardest part: latency. v1 called TabPFN once per daylight hour — 7s × 24, guaranteed timeout. Fixed by fitting once and batch-predicting all hours in one call, then caching the predictor keyed on the training-data fingerprint: 37s cold → 1.3s warm in prod. Second hardest: Open-Meteo 429-throttles Render's shared IP, which once blanked the whole demo — now retry + 30-min upstream cache + an honestly-labeled MET Norway backup feed. Third: labeling every AI output with its provenance (`risk_source`, coach source), including when it's "just" the baseline.
+
+## Why Does Open Innovation Matter?
+
+Symptom logs are health-adjacent — they must never train someone else's closed model or require an account. Open weights + a tabular foundation model give a personal forecast with no account, no tracking, no per-call price tag: TabPFN inference sees anonymized rows and never trains on them, Gemma runs local-first. $0 to run, any model swappable. Closed APIs would make this a privacy compromise and a billing meter; open makes it a tool parents can trust.
+
+## My Agent Session
+
+Built pair-programming with an AI agent (Hermes) — roughly 280 tool iterations across one session: real TabPFN verification, predictor cache, per-user logs, hosted-Gemma chain, PWA shell, upstream-resilience fallback, this post. No DevRelay link (session ran outside DevRelay); the full build log lives in the repo's commit history.
+
+## Prize Categories
+
+- Best Use of TabPFN
+- Best Use of Gemma
+- Best Use of Render
+- Overall
