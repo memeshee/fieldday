@@ -23,6 +23,7 @@ pip install -r requirements.txt
 export TABPFN_TOKEN="<priorlabs key>"   # free at https://ux.priorlabs.ai/account
 uvicorn app:app --port 8000
 # optional: ollama pull gemma3:1b && ollama serve  (local coach notes)
+# optional: export GEMINI_API_KEY=... (hosted Gemma coach notes, incl. Render)
 # optional: export HF_TOKEN=... (or GROQ_API_KEY=...) for hosted Gemma notes
 ```
 

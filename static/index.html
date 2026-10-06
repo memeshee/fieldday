@@ -24,6 +24,7 @@ button:disabled{opacity:.5}.ghost{background:#e8f0e8;color:#2e7d32}
 .small{font-size:13px;color:#5c755e}.streak{font-size:15px;font-weight:700}
 select,input[type=number]{padding:10px;border-radius:10px;border:1px solid #c9d8c9;font-size:15px;width:100%}
 label{font-size:13px;color:#4c6b50;display:block;margin:8px 0 2px}
+#logBtn{margin-top:14px}
 .src{font-size:12px;color:#7a907c}.bar{height:6px;background:#e3ece3;border-radius:99px;overflow:hidden;margin-top:8px}
 .bar>i{display:block;height:100%;width:30%;background:#3d8b40;border-radius:99px;transition:width .4s}
 </style>
@@ -81,9 +82,10 @@ function srcLabel(s){
 }
 function coachLabel(s){
   if(s==='gemma3-local')return '✍️ coach note by Gemma 3 (on-device)';
+  if(s==='gemma-hosted-gemini')return '✍️ coach note by Gemma 3 (hosted)';
   if(s==='gemma-hosted-hf')return '✍️ coach note by Gemma 3 (hosted)';
   if(s==='gemma-hosted-groq')return '✍️ coach note by Gemma (hosted)';
-  return '✍️ coach note (template — set HF_TOKEN or GROQ_API_KEY for Gemma)';
+  return '✍️ coach note (template — set GEMINI_API_KEY for Gemma)';
 }
 let tick=null;
 function progStart(){const t0=Date.now();$('prog').hidden=false;tick=setInterval(()=>{const e=(Date.now()-t0)/1000;$('progf').style.width=Math.min(96,8+e*4)+'%';$('status').textContent='Scoring… '+e.toFixed(0)+'s (first run wakes the server + asks the AI — worth it)'},500)}

@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app import explain, ExplainReq, grass_score, health
+from app import _extract_note, _valid_note
 from tabpfn_predict import flare_risks, log_path
 
 
@@ -41,6 +42,17 @@ def test_flare_risks_batch_shape():
     # With a token configured this must be genuine inference, never silent heuristic.
     if os.environ.get("TABPFN_TOKEN"):
         assert {r["source"] for r in out} == {"tabpfn"}
+
+
+def test_extract_note_rejects_thinking():
+    thinking = ('* Location: Hanoi.\n* Task: write 2 sentences.\n'
+                '* Draft: "It is a beautiful morning to head outside with the kids. '
+                'Now is the perfect time to enjoy the fresh air."\n* 2 sentences? Yes.')
+    assert _extract_note(thinking) == (
+        "It is a beautiful morning to head outside with the kids. "
+        "Now is the perfect time to enjoy the fresh air.")
+    assert _extract_note("no quotes here, just rambling") == ""
+    assert not _valid_note("Yes. * Option 1: ...")
 
 
 def test_explain_template_fallback_without_backends():

@@ -139,11 +139,11 @@ class ExplainReq(BaseModel):
 
 
 def _gemma_prompt(city: str, b: dict) -> str:
-    return (f"You are FieldDay, a friendly outdoors coach for allergy families. "
-            f"In 2 short sentences, tell a parent why {b.get('time', 'this hour')} "
-            f"in {city or 'their city'} is the best hour to take the kids outside "
-            f"(score {b.get('combined', '?')}/100, flare risk {b.get('flare_risk', '?')}). "
-            f"Plain, warm, no jargon.")
+    return (f"Write exactly 2 short sentences a parent will read on their phone. "
+            f"Context: {b.get('time', 'this hour')} in {city or 'their city'} scores "
+            f"{b.get('combined', '?')}/100 with personal flare risk {b.get('flare_risk', '?')} "
+            f"— it is today's best hour to take the kids outside. "
+            f"Warm, plain, no jargon. Output only the 2 sentences, no preamble.")
 
 
 def _gemma_local(prompt: str):
@@ -197,13 +197,71 @@ def _gemma_hosted_groq(prompt: str):
     return text, "gemma-hosted-groq"
 
 
+_NOTE_BANNED = ("`", "*", "<", ">", "?", "Yes", "Option", "Draft",
+                 "Sentence", "Constraint", "Step", "note>")
+
+
+def _valid_note(note: str) -> bool:
+    return (20 <= len(note) <= 400 and note.count("\n") <= 2
+            and note.endswith((".", "!"))
+            and not any(b in note for b in _NOTE_BANNED))
+def _extract_note(text: str):
+    """Pull a clean 2-sentence note out of a reasoning-model reply.
+
+    The hosted Gemma thinks out loud: instruction echoes, drafts, quoted
+    options, self-checks. The finished note is consistently the LAST quoted
+    string (or <note> block); validation rejects thinking fragments.
+    """
+    import re
+    segs = text.split("<note>")
+    if len(segs) > 1:
+        cand = segs[-1].split("</note>")[0].strip().strip('"').strip()
+        if _valid_note(cand):
+            return cand
+    quoted = re.findall(r'["“]([^"”]{20,400}?)["”]', text)
+    for cand in reversed(quoted):
+        if _valid_note(cand.strip()):
+            return cand.strip()
+    return ""
+
+
+def _gemma_hosted_gemini(prompt: str):
+    """Google Gemma via the Gemini API (needs GEMINI_API_KEY env).
+
+    The hosted Gemma-4 reasoning model thinks out loud; _extract_note pulls
+    the finished note out and anything unparsable falls through honestly.
+    """
+    token = os.environ.get("GEMINI_API_KEY", "")
+    if not token:
+        raise RuntimeError("no-gemini-key")
+    last_err = "gemini-unparseable"
+    for _ in range(2):  # one retry: the reasoning model is nondeterministic
+        r = httpx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemma-4-26b-a4b-it:generateContent",
+            params={"key": token},
+            json={"contents": [{"parts": [{"text": prompt}]}],
+                  "generationConfig": {"maxOutputTokens": 600, "temperature": 0.7}},
+            timeout=60)
+        r.raise_for_status()
+        data = r.json()
+        try:
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError, TypeError):
+            last_err = f"gemini-bad-shape:{str(data)[:80]}"
+            continue
+        note = _extract_note(text)
+        if note:
+            return note, "gemma-hosted-gemini"
+    raise RuntimeError(last_err)
+
+
 @app.post("/api/explain")
 def explain(req: ExplainReq):
     b = req.best or {}
     prompt = _gemma_prompt(req.city, b)
     # Local open weights first, hosted open weights second, template last.
     # Every path is labeled honestly in `source` so the UI can show it.
-    for fn in (_gemma_local, _gemma_hosted_hf, _gemma_hosted_groq):
+    for fn in (_gemma_local, _gemma_hosted_gemini, _gemma_hosted_hf, _gemma_hosted_groq):
         try:
             text, source = fn(prompt)
             return {"text": text, "source": source}
