@@ -4,7 +4,7 @@ One screen tells allergy families the single best hour to go outside today,
 then gets out of the way. Built for Hacktoberfest **Week 1: Touch Grass**.
 
 **Live demo:** https://fieldday-r66v.onrender.com ·
-**DEV post:** *(publishing — link lands here once the Forem key works)* ·
+**DEV post:** https://dev.to/memeshe/fieldday-the-allergy-smart-grass-window-30jn ·
 **Stack:** FastAPI + vanilla JS PWA · **Cost to run:** $0
 
 ![Family picnic day by the lake](https://thumb.wikimedia.org/wikipedia/commons/thumb/f/fa/Family_Picnic_Near_Orchard_Point_Marina.jpg/1280px-Family_Picnic_Near_Orchard_Point_Marina.jpg)
