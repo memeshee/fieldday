@@ -102,7 +102,9 @@ $('go').onclick=async()=>{
     if(!g.results||!g.results.length)throw new Error('city?');
     const{latitude:lat,longitude:lon,name,country}=g.results[0];
     progStart();
-    const w=await(await fetch(`/api/grass-window?lat=${lat}&lon=${lon}&uid=${encodeURIComponent(uid)}`)).json();
+    const gwResp=await fetch(`/api/grass-window?lat=${lat}&lon=${lon}&uid=${encodeURIComponent(uid)}`);
+    if(!gwResp.ok){const d=await gwResp.json().catch(()=>({}));throw new Error(d.detail||('upstream-'+gwResp.status))}
+    const w=await gwResp.json();
     progStop();
     if(!w.best)throw new Error('no-data');
     last={city:name,w};const b=w.best;
@@ -116,7 +118,7 @@ $('go').onclick=async()=>{
     $('hours').innerHTML=w.hours.slice(0,8).map(h=>`<div class="hour"><span>${h.time.slice(5).replace('T',' ')} · ${h.temp_c}°C · risk ${h.flare_risk}</span>${pill(h.combined)}</div>`).join('');
     $('lPol').value=b.pollen_index;$('lHour').value=b.hour;
     $('status').textContent='Done. Screen off — go outside.';
-  }catch(e){progStop();$('status').textContent='Hmm, that lookup failed. Try another city spelling.'}
+  }catch(e){progStop();$('status').textContent='That lookup failed ('+(e.message||'network')+'). Wait a minute and retry — free weather APIs throttle shared hosting IPs.'}
   $('go').disabled=false;
 };
 $('logBtn').onclick=async()=>{

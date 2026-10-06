@@ -5,7 +5,7 @@ import re
 import time
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -14,7 +14,23 @@ from tabpfn_predict import flare_risks, log_path
 
 app = FastAPI(title="FieldDay")
 BASE = os.path.dirname(os.path.abspath(__file__))
-HTTP = httpx.Client(timeout=20)
+UA = {"User-Agent": "FieldDay/1.0 (hackathon demo; github.com/memeshee/fieldday)"}
+HTTP = httpx.Client(timeout=20, headers=UA)
+
+
+def _get_upstream(url: str, params: dict, what: str):
+    """Fetch with one retry; raise a labeled 502 instead of silent empty data."""
+    last = "unknown"
+    for _ in range(2):
+        try:
+            r = HTTP.get(url, params=params)
+            if r.status_code == 200:
+                return r.json()
+            last = f"http-{r.status_code}"
+        except Exception as e:
+            last = f"{type(e).__name__}"
+            time.sleep(2)
+    raise HTTPException(status_code=502, detail=f"{what} unavailable ({last})")
 
 GEMMA_MODEL = "gemma3:1b"
 
@@ -41,18 +57,16 @@ def health():
 
 @app.get("/api/geocode")
 def geocode(name: str):
-    r = HTTP.get("https://geocoding-api.open-meteo.com/v1/search",
-                 params={"name": name, "count": 5, "format": "json"})
-    r.raise_for_status()
-    return r.json()
+    return _get_upstream("https://geocoding-api.open-meteo.com/v1/search",
+                         {"name": name, "count": 5, "format": "json"}, "geocode")
 
 
 @app.get("/api/grass-window")
 def grass_window(lat: float, lon: float, uid: str = ""):
-    fx = HTTP.get("https://api.open-meteo.com/v1/forecast", params={
+    fx = _get_upstream("https://api.open-meteo.com/v1/forecast", {
         "latitude": lat, "longitude": lon,
         "hourly": "temperature_2m,precipitation_probability,weathercode,windspeed_10m,uv_index,is_day",
-        "forecast_days": 2, "timezone": "auto"}).json()
+        "forecast_days": 2, "timezone": "auto"}, "forecast")
     aq = {}
     try:
         aq = HTTP.get("https://air-quality-api.open-meteo.com/v1/air-quality", params={
