@@ -1,6 +1,7 @@
 """FieldDay — allergy-smart grass window. FastAPI backend + static PWA."""
 import csv
 import os
+import re
 import time
 
 import httpx
@@ -197,14 +198,18 @@ def _gemma_hosted_groq(prompt: str):
     return text, "gemma-hosted-groq"
 
 
-_NOTE_BANNED = ("`", "*", "<", ">", "?", "Yes", "Option", "Draft",
-                 "Sentence", "Constraint", "Step", "note>")
+_NOTE_BANNED = ("`", "*", "<", ">", "?", "yes", "option", "draft",
+                 "sentence", "constraint", "step", "note>", "preamble",
+                 "instruction", "echo")
 
 
 def _valid_note(note: str) -> bool:
-    return (20 <= len(note) <= 400 and note.count("\n") <= 2
-            and note.endswith((".", "!"))
-            and not any(b in note for b in _NOTE_BANNED))
+    low = note.lower()
+    sents = [s for s in re.split(r"[.!]\s*", note) if s.strip()]
+    return (len(note) >= 40 and len(sents) >= 2
+            and all(len(s) >= 15 for s in sents[:2])
+            and note.count("\n") <= 2 and note.rstrip().endswith((".", "!"))
+            and not any(b in low for b in _NOTE_BANNED))
 def _extract_note(text: str):
     """Pull a clean 2-sentence note out of a reasoning-model reply.
 
@@ -235,7 +240,7 @@ def _gemma_hosted_gemini(prompt: str):
     if not token:
         raise RuntimeError("no-gemini-key")
     last_err = "gemini-unparseable"
-    for _ in range(2):  # one retry: the reasoning model is nondeterministic
+    for _ in range(3):  # retries: the reasoning model is nondeterministic
         r = httpx.post(
             "https://generativelanguage.googleapis.com/v1beta/models/gemma-4-26b-a4b-it:generateContent",
             params={"key": token},

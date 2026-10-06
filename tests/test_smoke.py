@@ -52,6 +52,7 @@ def test_extract_note_rejects_thinking():
         "It is a beautiful morning to head outside with the kids. "
         "Now is the perfect time to enjoy the fresh air.")
     assert _extract_note("no quotes here, just rambling") == ""
+    assert _extract_note('* thinking... "part. It means it\'s safe." ...done') == ""
     assert not _valid_note("Yes. * Option 1: ...")
 
 
