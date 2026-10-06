@@ -1,16 +1,18 @@
 """Flare-risk prediction with TabPFN (Prior Labs tabular foundation model).
 
 Trains on the user's own symptom log CSV and predicts P(symptoms>=2)
-for a candidate hour. Falls back to a transparent heuristic baseline
-when there are fewer than 10 logged rows.
+for a candidate hour. Uses the lightweight TabPFN cloud client
+(tabpfn-client, no torch needed) when TABPFN_TOKEN is set; tries the
+local tabpfn package as a second option; falls back to a transparent
+heuristic baseline when there are fewer than 10 logged rows or no
+TabPFN backend is reachable.
 """
 import csv
 import os
 
-# Free one-time setup for genuine TabPFN inference:
-# 1. Log in at https://ux.priorlabs.ai, accept the license (Licenses tab)
-# 2. Copy API key from https://ux.priorlabs.ai/account
-# 3. export TABPFN_TOKEN="<key>"  (tabpfn reads it automatically)
+# Get a free key: log in at https://ux.priorlabs.ai, accept the license
+# (Licenses tab), copy the key from https://ux.priorlabs.ai/account, then:
+#   export TABPFN_TOKEN="<key>"   (both tabpfn and tabpfn-client read it)
 
 FEATURES = ["hour", "temp_c", "pollen_index", "wind_kph"]
 TARGET_CUT = 2  # symptoms >= 2 counts as a flare
@@ -38,6 +40,22 @@ def _load_rows():
     return rows
 
 
+def _predict_cloud(X, y, sample):
+    """Lightweight TabPFN cloud client (no torch). Returns proba or raises."""
+    from tabpfn_client import TabPFNClassifier
+    clf = TabPFNClassifier()
+    clf.fit(X, y)
+    return float(clf.predict_proba(sample)[0][1])
+
+
+def _predict_local(X, y, sample):
+    """Full local tabpfn package (needs torch). Returns proba or raises."""
+    from tabpfn import TabPFNClassifier
+    clf = TabPFNClassifier(ignore_pretraining_limits=True)
+    clf.fit(X, y)
+    return float(clf.predict_proba(sample)[0][1])
+
+
 def flare_risk(hour: float, temp_c: float, pollen_index: float, wind_kph: float) -> dict:
     rows = _load_rows()
     base = min(0.9, 0.08 * pollen_index + max(0, abs(temp_c - 21) - 3) * 0.02
@@ -46,15 +64,19 @@ def flare_risk(hour: float, temp_c: float, pollen_index: float, wind_kph: float)
         return {"risk": round(base, 3), "source": "heuristic-baseline", "n_rows": len(rows)}
     try:
         import numpy as np
-        from tabpfn import TabPFNClassifier
         X = np.array([[r["hour"], r["temp_c"], r["pollen_index"], r["wind_kph"]] for r in rows])
         y = np.array([r["flare"] for r in rows])
         if len(set(y.tolist())) < 2:
             return {"risk": round(base, 3), "source": "heuristic-baseline", "n_rows": len(rows)}
-        clf = TabPFNClassifier(ignore_pretraining_limits=True)
-        clf.fit(X, y)
-        proba = float(clf.predict_proba(
-            np.array([[hour, temp_c, pollen_index, wind_kph]]))[0][1])
+        sample = np.array([[hour, temp_c, pollen_index, wind_kph]])
+        # Prefer the lightweight cloud client when a token is configured.
+        if os.environ.get("TABPFN_TOKEN"):
+            try:
+                proba = _predict_cloud(X, y, sample)
+                return {"risk": round(proba, 3), "source": "tabpfn", "n_rows": len(rows)}
+            except Exception:
+                pass  # fall through to local package, then heuristic
+        proba = _predict_local(X, y, sample)
         return {"risk": round(proba, 3), "source": "tabpfn", "n_rows": len(rows)}
     except Exception as e:
         return {"risk": round(base, 3), "source": f"heuristic-fallback:{type(e).__name__}",
