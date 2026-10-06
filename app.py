@@ -2,6 +2,7 @@
 import csv
 import os
 import re
+import threading
 import time
 
 import httpx
@@ -32,6 +33,38 @@ def _get_upstream(url: str, params: dict, what: str):
             time.sleep(2)
     raise HTTPException(status_code=502, detail=f"{what} unavailable ({last})")
 
+
+# Upstream cache: free weather APIs throttle shared hosting IPs, so a repeat
+# visit (or a second judge in the same city) must cost zero upstream calls.
+# Keys round coords to ~11km; forecast TTL 30 min, geocode TTL 24 h.
+_UP_CACHE = {}
+_UP_LOCK = threading.Lock()
+
+
+def _cached_upstream(url: str, params: dict, what: str, ttl: int, precision: int = 1):
+    key = (url, tuple(sorted((k, (round(float(v), precision)
+                                  if k in ("latitude", "longitude") and _is_num(v) else v))
+                             for k, v in params.items())))
+    now = time.time()
+    with _UP_LOCK:
+        hit = _UP_CACHE.get(key)
+        if hit and hit[0] > now:
+            return hit[1]
+    data = _get_upstream(url, params, what)
+    with _UP_LOCK:
+        _UP_CACHE[key] = (now + ttl, data)
+        if len(_UP_CACHE) > 64:
+            _UP_CACHE.pop(next(iter(_UP_CACHE)))
+    return data
+
+
+def _is_num(v) -> bool:
+    try:
+        float(v)
+        return True
+    except (TypeError, ValueError):
+        return False
+
 GEMMA_MODEL = "gemma3:1b"
 
 # ---- grass scoring (own weights; daylight hours only) ----
@@ -57,21 +90,22 @@ def health():
 
 @app.get("/api/geocode")
 def geocode(name: str):
-    return _get_upstream("https://geocoding-api.open-meteo.com/v1/search",
-                         {"name": name, "count": 5, "format": "json"}, "geocode")
+    return _cached_upstream("https://geocoding-api.open-meteo.com/v1/search",
+                            {"name": name, "count": 5, "format": "json"},
+                            "geocode", ttl=86400)
 
 
 @app.get("/api/grass-window")
 def grass_window(lat: float, lon: float, uid: str = ""):
-    fx = _get_upstream("https://api.open-meteo.com/v1/forecast", {
+    fx = _cached_upstream("https://api.open-meteo.com/v1/forecast", {
         "latitude": lat, "longitude": lon,
         "hourly": "temperature_2m,precipitation_probability,weathercode,windspeed_10m,uv_index,is_day",
-        "forecast_days": 2, "timezone": "auto"}, "forecast")
+        "forecast_days": 2, "timezone": "auto"}, "forecast", ttl=1800)
     aq = {}
     try:
-        aq = HTTP.get("https://air-quality-api.open-meteo.com/v1/air-quality", params={
+        aq = _cached_upstream("https://air-quality-api.open-meteo.com/v1/air-quality", {
             "latitude": lat, "longitude": lon, "hourly": "alder_pollen,birch_pollen,grass_pollen",
-            "forecast_days": 2, "timezone": "auto"}).json()
+            "forecast_days": 2, "timezone": "auto"}, "pollen", ttl=1800)
     except Exception:
         pass
     h = fx.get("hourly", {})
