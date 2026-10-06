@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from tabpfn_predict import LOG, flare_risk
+from tabpfn_predict import LOG, flare_risks
 
 app = FastAPI(title="FieldDay")
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -60,7 +60,8 @@ def grass_window(lat: float, lon: float):
     h = fx.get("hourly", {})
     n = len(h.get("time", []))
     aqh = (aq.get("hourly") or {})
-    hours = []
+    # First pass: collect daylight-hour features (no model calls yet).
+    feats, meta = [], []
     for i in range(n):
         try:
             if (h.get("is_day") or [1] * n)[i] != 1:
@@ -80,18 +81,23 @@ def grass_window(lat: float, lon: float):
             pollen_idx = min(5, int(pollen // 20) if pollen else 0)
             score = grass_score(t, p, w, uv, code)
             hr = int(h["time"][i][11:13])
-            fr = flare_risk(hr, t, pollen_idx, w)
-            combined = round(max(0, min(100, score - fr["risk"] * 60)))
-            hours.append({"time": h["time"][i], "hour": hr, "temp_c": t,
-                          "precip_prob": p, "wind_kph": w, "uv": uv,
-                          "pollen_index": pollen_idx, "grass": score,
-                          "flare_risk": fr["risk"], "risk_source": fr["source"],
-                          "combined": combined})
+            feats.append((hr, t, pollen_idx, w))
+            meta.append({"time": h["time"][i], "hour": hr, "temp_c": t,
+                         "precip_prob": p, "wind_kph": w, "uv": uv,
+                         "pollen_index": pollen_idx, "grass": score})
         except Exception:
             continue
+    # One batched TabPFN call for all hours (fit once, not once-per-hour).
+    risks = flare_risks(feats) if feats else []
+    hours = []
+    for m, fr in zip(meta, risks):
+        combined = round(max(0, min(100, m["grass"] - fr["risk"] * 60)))
+        hours.append({**m, "flare_risk": fr["risk"], "risk_source": fr["source"],
+                      "combined": combined})
     hours.sort(key=lambda x: -x["combined"])
+    n_rows = risks[0]["n_rows"] if risks else 0
     return {"hours": hours, "best": hours[0] if hours else None,
-            "risk_rows": fr["n_rows"] if hours else 0}
+            "risk_rows": n_rows}
 
 
 class LogEntry(BaseModel):
