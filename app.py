@@ -67,6 +67,74 @@ def _is_num(v) -> bool:
 
 GEMMA_MODEL = "gemma3:1b"
 
+_METNO_SYMBOLS = [  # (substring, weathercode-ish, precip_prob)
+    ("thunder", 96, 90), ("hail", 75, 80), ("sleet", 67, 75),
+    ("snow", 71, 75), ("rain", 63, 75), ("drizzle", 53, 45),
+    ("fog", 45, 30), ("cloudy", 3, 20), ("partlycloudy", 2, 10),
+    ("fair", 1, 5), ("clearsky", 0, 5),
+]
+
+
+def _metno_forecast(lat: float, lon: float):
+    """Backup forecast via MET Norway (free, keyless) when Open-Meteo throttles.
+
+    Returns (feats, meta) in the same shape as the primary branch.
+    Precipitation probability is an approximation from symbol + amount;
+    pollen falls back to a neutral index when the AQ host is also down.
+    """
+    data = _get_upstream(
+        "https://api.met.no/weatherapi/locationforecast/2.0/complete",
+        {"lat": round(lat, 4), "lon": round(lon, 4)}, "metno-forecast")
+    aq = {}
+    try:
+        aq = _cached_upstream("https://air-quality-api.open-meteo.com/v1/air-quality", {
+            "latitude": lat, "longitude": lon, "hourly": "alder_pollen,birch_pollen,grass_pollen",
+            "forecast_days": 2, "timezone": "UTC"}, "pollen", ttl=1800)
+    except Exception:
+        pass
+    aqh = aq.get("hourly", {}) or {}
+    aq_times = aqh.get("time", []) or []
+    feats, meta = [], []
+    for entry in data.get("properties", {}).get("timeseries", []):
+        try:
+            ts = entry.get("time", "")
+            det = entry.get("data", {}).get("instant", {}).get("details", {})
+            n1 = entry.get("data", {}).get("next_1_hours") or {}
+            sym = (n1.get("summary", {}).get("symbol_code", "") or "").lower()
+            if "night" in sym and "day" not in sym:
+                continue  # daylight hours only, mirroring the primary branch
+            t = float(det.get("air_temperature", 20))
+            w = float(det.get("wind_speed", 0)) * 3.6
+            amt = float((n1.get("details", {}) or {}).get("precipitation_amount", 0) or 0)
+            uv = float(det.get("ultraviolet_index_clear_sky", 3) or 0)
+            code, prob = 2, 15
+            for sub, c, p in _METNO_SYMBOLS:
+                if sub in sym:
+                    code, prob = c, p
+                    break
+            prob = min(95, max(prob, amt * 40))
+            pollen_idx = 2
+            if aq_times:
+                try:
+                    i = aq_times.index(ts[:13] + ":00" if len(ts) >= 13 else ts)
+                    pk = 0.0
+                    for k in ("alder_pollen", "birch_pollen", "grass_pollen"):
+                        pk = max(pk, float((aqh.get(k) or [0])[i] or 0))
+                    pollen_idx = min(5, int(pk // 20) if pk else 0)
+                except (ValueError, IndexError):
+                    pass
+            score = grass_score(t, prob, w, uv, code)
+            hr = int(ts[11:13])
+            feats.append((hr, t, pollen_idx, w))
+            meta.append({"time": ts, "hour": hr, "temp_c": round(t, 1),
+                         "precip_prob": round(prob), "wind_kph": round(w, 1),
+                         "uv": round(uv, 1), "pollen_index": pollen_idx,
+                         "grass": score})
+        except Exception:
+            continue
+    return feats, meta
+
+
 # ---- grass scoring (own weights; daylight hours only) ----
 def grass_score(temp_c, precip_prob, wind_kph, uv, code):
     s = 100.0
@@ -97,47 +165,59 @@ def geocode(name: str):
 
 @app.get("/api/grass-window")
 def grass_window(lat: float, lon: float, uid: str = ""):
-    fx = _cached_upstream("https://api.open-meteo.com/v1/forecast", {
-        "latitude": lat, "longitude": lon,
-        "hourly": "temperature_2m,precipitation_probability,weathercode,windspeed_10m,uv_index,is_day",
-        "forecast_days": 2, "timezone": "auto"}, "forecast", ttl=1800)
-    aq = {}
     try:
-        aq = _cached_upstream("https://air-quality-api.open-meteo.com/v1/air-quality", {
-            "latitude": lat, "longitude": lon, "hourly": "alder_pollen,birch_pollen,grass_pollen",
-            "forecast_days": 2, "timezone": "auto"}, "pollen", ttl=1800)
-    except Exception:
-        pass
-    h = fx.get("hourly", {})
-    n = len(h.get("time", []))
-    aqh = (aq.get("hourly") or {})
-    # First pass: collect daylight-hour features (no model calls yet).
-    feats, meta = [], []
-    for i in range(n):
+        fx = _cached_upstream("https://api.open-meteo.com/v1/forecast", {
+            "latitude": lat, "longitude": lon,
+            "hourly": "temperature_2m,precipitation_probability,weathercode,windspeed_10m,uv_index,is_day",
+            "forecast_days": 2, "timezone": "auto"}, "forecast", ttl=1800)
+        wx_source = "open-meteo"
+    except HTTPException:
+        # Shared hosting IPs get throttled by Open-Meteo (429). Rather than
+        # dying for every judge, degrade honestly to the MET Norway feed.
+        fx, wx_source = None, "metno"
+    if wx_source == "metno":
+        feats, meta = _metno_forecast(lat, lon)
+        if not feats:
+            raise HTTPException(status_code=502, detail="both weather feeds unavailable")
+    else:
+        aq = {}
         try:
-            if (h.get("is_day") or [1] * n)[i] != 1:
-                continue
-            t = float((h.get("temperature_2m") or [20] * n)[i])
-            p = float((h.get("precipitation_probability") or [0] * n)[i] or 0)
-            w = float((h.get("windspeed_10m") or [0] * n)[i] or 0)
-            uv = float((h.get("uv_index") or [0] * n)[i] or 0)
-            code = int((h.get("weathercode") or [0] * n)[i] or 0)
-            pollen = 0.0
-            for k in ("alder_pollen", "birch_pollen", "grass_pollen"):
-                try:
-                    v = (aqh.get(k) or [0] * n)[i]
-                    pollen = max(pollen, float(v or 0))
-                except Exception:
-                    pass
-            pollen_idx = min(5, int(pollen // 20) if pollen else 0)
-            score = grass_score(t, p, w, uv, code)
-            hr = int(h["time"][i][11:13])
-            feats.append((hr, t, pollen_idx, w))
-            meta.append({"time": h["time"][i], "hour": hr, "temp_c": t,
-                         "precip_prob": p, "wind_kph": w, "uv": uv,
-                         "pollen_index": pollen_idx, "grass": score})
+            aq = _cached_upstream("https://air-quality-api.open-meteo.com/v1/air-quality", {
+                "latitude": lat, "longitude": lon, "hourly": "alder_pollen,birch_pollen,grass_pollen",
+                "forecast_days": 2, "timezone": "auto"}, "pollen", ttl=1800)
         except Exception:
-            continue
+            pass
+        h = fx.get("hourly", {})
+        n = len(h.get("time", []))
+        aqh = (aq.get("hourly") or {})
+    # First pass (primary feed only): collect daylight-hour features.
+    if wx_source != "metno":
+        feats, meta = [], []
+        for i in range(n):
+            try:
+                if (h.get("is_day") or [1] * n)[i] != 1:
+                    continue
+                t = float((h.get("temperature_2m") or [20] * n)[i])
+                p = float((h.get("precipitation_probability") or [0] * n)[i] or 0)
+                w = float((h.get("windspeed_10m") or [0] * n)[i] or 0)
+                uv = float((h.get("uv_index") or [0] * n)[i] or 0)
+                code = int((h.get("weathercode") or [0] * n)[i] or 0)
+                pollen = 0.0
+                for k in ("alder_pollen", "birch_pollen", "grass_pollen"):
+                    try:
+                        v = (aqh.get(k) or [0] * n)[i]
+                        pollen = max(pollen, float(v or 0))
+                    except Exception:
+                        pass
+                pollen_idx = min(5, int(pollen // 20) if pollen else 0)
+                score = grass_score(t, p, w, uv, code)
+                hr = int(h["time"][i][11:13])
+                feats.append((hr, t, pollen_idx, w))
+                meta.append({"time": h["time"][i], "hour": hr, "temp_c": t,
+                             "precip_prob": p, "wind_kph": w, "uv": uv,
+                             "pollen_index": pollen_idx, "grass": score})
+            except Exception:
+                continue
     # One batched TabPFN call for all hours (fit once, cached while data is unchanged).
     t0 = time.time()
     risks = flare_risks(feats, uid or None) if feats else []
@@ -150,7 +230,8 @@ def grass_window(lat: float, lon: float, uid: str = ""):
     hours.sort(key=lambda x: -x["combined"])
     n_rows = risks[0]["n_rows"] if risks else 0
     return {"hours": hours, "best": hours[0] if hours else None,
-            "risk_rows": n_rows, "inference_s": inference_s}
+            "risk_rows": n_rows, "inference_s": inference_s,
+            "wx_source": wx_source}
 
 
 class LogEntry(BaseModel):

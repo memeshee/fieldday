@@ -114,7 +114,8 @@ $('go').onclick=async()=>{
     const ex=await explain(name,b,b.risk_source);
     $('bestWhy').textContent=ex.text;
     $('bestMeta').textContent=`grass ${b.grass} · flare risk ${b.flare_risk} · pollen ${b.pollen_index}/5 · wind ${b.wind_kph} kph`;
-    $('bestSrc').textContent=`risk: ${srcLabel(b.risk_source)} (${w.risk_rows} rows${w.inference_s!=null?', '+w.inference_s+'s':''}) · ${coachLabel(ex.source)}`;
+    const wxTag=w.wx_source==='metno'?'weather via backup feed (Open-Meteo throttled) · ':'';
+    $('bestSrc').textContent=`${wxTag}risk: ${srcLabel(b.risk_source)} (${w.risk_rows} rows${w.inference_s!=null?', '+w.inference_s+'s':''}) · ${coachLabel(ex.source)}`;
     $('hours').innerHTML=w.hours.slice(0,8).map(h=>`<div class="hour"><span>${h.time.slice(5).replace('T',' ')} · ${h.temp_c}°C · risk ${h.flare_risk}</span>${pill(h.combined)}</div>`).join('');
     $('lPol').value=b.pollen_index;$('lHour').value=b.hour;
     $('status').textContent='Done. Screen off — go outside.';
