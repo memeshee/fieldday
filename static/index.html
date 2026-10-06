@@ -3,7 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#2e7d32">
+<meta name="description" content="FieldDay — the allergy-smart grass window. Open-weight AI picks your best hour outside.">
 <title>FieldDay — touch grass at the right hour</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/svg+xml" href="/icon.svg">
 <style>
 :root{color-scheme:light}*{box-sizing:border-box}
 body{font-family:system-ui,-apple-system,sans-serif;margin:0;background:#f3f7ef;color:#1d2b1f}
@@ -20,6 +24,8 @@ button:disabled{opacity:.5}.ghost{background:#e8f0e8;color:#2e7d32}
 .small{font-size:13px;color:#5c755e}.streak{font-size:15px;font-weight:700}
 select,input[type=number]{padding:10px;border-radius:10px;border:1px solid #c9d8c9;font-size:15px;width:100%}
 label{font-size:13px;color:#4c6b50;display:block;margin:8px 0 2px}
+.src{font-size:12px;color:#7a907c}.bar{height:6px;background:#e3ece3;border-radius:99px;overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;width:30%;background:#3d8b40;border-radius:99px;transition:width .4s}
 </style>
 </head>
 <body><main>
@@ -31,7 +37,8 @@ label{font-size:13px;color:#4c6b50;display:block;margin:8px 0 2px}
 <input id="city" placeholder="City — e.g. Hanoi, Berlin, Austin" value="Hanoi">
 <button id="go">Go</button>
 </div>
-<p class="small" id="status">Free weather + pollen data, no sign-up. Your symptom log stays on this device.</p>
+<p class="small" id="status">Free weather + pollen data, no sign-up. Your log is tied to a random ID in this browser — no account, no name.</p>
+<div class="bar" id="prog" hidden><i id="progf"></i></div>
 </div>
 
 <div class="card best" id="bestCard" hidden>
@@ -40,6 +47,7 @@ label{font-size:13px;color:#4c6b50;display:block;margin:8px 0 2px}
 <div id="bestTime" style="font-weight:700"></div>
 <p id="bestWhy"></p>
 <p class="small" id="bestMeta"></p>
+<p class="src" id="bestSrc"></p>
 <button id="wentBtn" class="ghost">✅ I touched grass (+1 streak)</button>
 </div>
 
@@ -54,41 +62,63 @@ label{font-size:13px;color:#4c6b50;display:block;margin:8px 0 2px}
 <p class="small" id="logMsg"></p>
 <p class="streak">🔥 Streak: <span id="streak">0</span> grass touches</p>
 </div>
-<p class="small">Wellness info only, not medical advice. Open-weight AI (Gemma local + TabPFN) at the core.</p>
+<p class="small">Wellness info only, not medical advice. Flare risk: TabPFN foundation model on your log via Prior Labs' inference API (anonymized symptom rows, never used for training). Coach notes: Gemma open weights, local-first with hosted fallback.</p>
 </main>
 <script>
+if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{})}
 const $=id=>document.getElementById(id);
+// Per-browser anonymous ID: your taps train YOUR forecast, nobody else's.
+let uid=localStorage.getItem('fd_uid');
+if(!uid){uid=(crypto.randomUUID?crypto.randomUUID():'u-'+Date.now()+'-'+Math.floor(Math.random()*1e9));localStorage.setItem('fd_uid',uid)}
 let last=null;
 $('streak').textContent=localStorage.getItem('fd_streak')||0;
 function pill(v){return v>=70?'<span class="pill hi">'+v+'</span>':v>=45?'<span class="pill mid">'+v+'</span>':'<span class="pill lo">'+v+'</span>'}
+function srcLabel(s){
+  if(s==='tabpfn')return 'TabPFN 🤖';
+  if(s==='heuristic-baseline')return 'baseline (log a few days to unlock TabPFN)';
+  if((s||'').startsWith('heuristic-fallback'))return 'baseline (AI unreachable, honest fallback)';
+  return s||'?';
+}
+function coachLabel(s){
+  if(s==='gemma3-local')return '✍️ coach note by Gemma 3 (on-device)';
+  if(s==='gemma-hosted-hf')return '✍️ coach note by Gemma 3 (hosted)';
+  if(s==='gemma-hosted-groq')return '✍️ coach note by Gemma (hosted)';
+  return '✍️ coach note (template — set HF_TOKEN or GROQ_API_KEY for Gemma)';
+}
+let tick=null;
+function progStart(){const t0=Date.now();$('prog').hidden=false;tick=setInterval(()=>{const e=(Date.now()-t0)/1000;$('progf').style.width=Math.min(96,8+e*4)+'%';$('status').textContent='Scoring… '+e.toFixed(0)+'s (first run wakes the server + asks the AI — worth it)'},500)}
+function progStop(){$('prog').hidden=true;clearInterval(tick)}
 async function explain(city,best,rs){
   try{const r=await fetch('/api/explain',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({city,best,risk_source:rs})});const j=await r.json();return j.text+(j.source==='gemma3-local'?'':'')}catch(e){return ''}
+    body:JSON.stringify({city,best,risk_source:rs})});return await r.json()}catch(e){return {text:'',source:'offline'}}
 }
 $('go').onclick=async()=>{
   const city=$('city').value.trim();if(!city)return;
-  $('go').disabled=true;$('status').textContent='Looking up '+city+'…';
+  $('go').disabled=true;$('status').textContent='Looking up '+city+'…';$('progf').style.width='8%';$('prog').hidden=false;
   try{
     const g=await(await fetch('/api/geocode?name='+encodeURIComponent(city))).json();
     if(!g.results||!g.results.length)throw new Error('city?');
     const{latitude:lat,longitude:lon,name,country}=g.results[0];
-    $('status').textContent='Scoring daylight hours near '+name+', '+(country||'')+'…';
-    const w=await(await fetch(`/api/grass-window?lat=${lat}&lon=${lon}`)).json();
+    progStart();
+    const w=await(await fetch(`/api/grass-window?lat=${lat}&lon=${lon}&uid=${encodeURIComponent(uid)}`)).json();
+    progStop();
     if(!w.best)throw new Error('no-data');
     last={city:name,w};const b=w.best;
     $('bestCard').hidden=false;$('bestScore').textContent=b.combined;
     $('bestTime').textContent='☀️ '+b.time.replace('T',' ')+' — '+b.temp_c+'°C';
-    $('bestWhy').textContent='Loading coach note…';
-    $('bestWhy').textContent=await explain(name,b,b.risk_source);
-    $('bestMeta').textContent=`grass ${b.grass} · flare risk ${b.flare_risk} (${b.risk_source}, ${w.risk_rows} rows) · pollen ${b.pollen_index}/5 · wind ${b.wind_kph} kph`;
+    $('bestWhy').textContent='Asking the coach…';
+    const ex=await explain(name,b,b.risk_source);
+    $('bestWhy').textContent=ex.text;
+    $('bestMeta').textContent=`grass ${b.grass} · flare risk ${b.flare_risk} · pollen ${b.pollen_index}/5 · wind ${b.wind_kph} kph`;
+    $('bestSrc').textContent=`risk: ${srcLabel(b.risk_source)} (${w.risk_rows} rows${w.inference_s!=null?', '+w.inference_s+'s':''}) · ${coachLabel(ex.source)}`;
     $('hours').innerHTML=w.hours.slice(0,8).map(h=>`<div class="hour"><span>${h.time.slice(5).replace('T',' ')} · ${h.temp_c}°C · risk ${h.flare_risk}</span>${pill(h.combined)}</div>`).join('');
     $('lPol').value=b.pollen_index;$('lHour').value=b.hour;
     $('status').textContent='Done. Screen off — go outside.';
-  }catch(e){$('status').textContent='Hmm, that lookup failed. Try another city spelling.'}
+  }catch(e){progStop();$('status').textContent='Hmm, that lookup failed. Try another city spelling.'}
   $('go').disabled=false;
 };
 $('logBtn').onclick=async()=>{
-  const body={hour:+$('lHour').value,symptoms:+$('lSym').value,pollen_index:+$('lPol').value};
+  const body={hour:+$('lHour').value,symptoms:+$('lSym').value,pollen_index:+$('lPol').value,uid};
   const r=await fetch('/api/log',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   $('logMsg').textContent=r.ok?'Saved — your next forecast just got smarter.':'Save failed.';
 };

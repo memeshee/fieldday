@@ -9,11 +9,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from tabpfn_predict import LOG, flare_risks
+from tabpfn_predict import flare_risks, log_path
 
 app = FastAPI(title="FieldDay")
 BASE = os.path.dirname(os.path.abspath(__file__))
 HTTP = httpx.Client(timeout=20)
+
+GEMMA_MODEL = "gemma3:1b"
 
 # ---- grass scoring (own weights; daylight hours only) ----
 def grass_score(temp_c, precip_prob, wind_kph, uv, code):
@@ -45,7 +47,7 @@ def geocode(name: str):
 
 
 @app.get("/api/grass-window")
-def grass_window(lat: float, lon: float):
+def grass_window(lat: float, lon: float, uid: str = ""):
     fx = HTTP.get("https://api.open-meteo.com/v1/forecast", params={
         "latitude": lat, "longitude": lon,
         "hourly": "temperature_2m,precipitation_probability,weathercode,windspeed_10m,uv_index,is_day",
@@ -87,8 +89,10 @@ def grass_window(lat: float, lon: float):
                          "pollen_index": pollen_idx, "grass": score})
         except Exception:
             continue
-    # One batched TabPFN call for all hours (fit once, not once-per-hour).
-    risks = flare_risks(feats) if feats else []
+    # One batched TabPFN call for all hours (fit once, cached while data is unchanged).
+    t0 = time.time()
+    risks = flare_risks(feats, uid or None) if feats else []
+    inference_s = round(time.time() - t0, 1)
     hours = []
     for m, fr in zip(meta, risks):
         combined = round(max(0, min(100, m["grass"] - fr["risk"] * 60)))
@@ -97,7 +101,7 @@ def grass_window(lat: float, lon: float):
     hours.sort(key=lambda x: -x["combined"])
     n_rows = risks[0]["n_rows"] if risks else 0
     return {"hours": hours, "best": hours[0] if hours else None,
-            "risk_rows": n_rows}
+            "risk_rows": n_rows, "inference_s": inference_s}
 
 
 class LogEntry(BaseModel):
@@ -108,12 +112,16 @@ class LogEntry(BaseModel):
     wind_kph: float = 8
     symptoms: float = 0
     went_out: int = 1
+    uid: str = ""
 
 
 @app.post("/api/log")
 def log(entry: LogEntry):
-    new = not os.path.exists(LOG)
-    with open(LOG, "a", newline="") as f:
+    # Per-user log file: each visitor trains their own model, nobody's
+    # test taps pollute anyone else's forecast.
+    path = log_path(entry.uid or None)
+    new = not os.path.exists(path)
+    with open(path, "a", newline="") as f:
         w = csv.writer(f)
         if new:
             w.writerow(["date", "hour", "temp_c", "pollen_index", "wind_kph",
@@ -130,24 +138,77 @@ class ExplainReq(BaseModel):
     risk_source: str = ""
 
 
+def _gemma_prompt(city: str, b: dict) -> str:
+    return (f"You are FieldDay, a friendly outdoors coach for allergy families. "
+            f"In 2 short sentences, tell a parent why {b.get('time', 'this hour')} "
+            f"in {city or 'their city'} is the best hour to take the kids outside "
+            f"(score {b.get('combined', '?')}/100, flare risk {b.get('flare_risk', '?')}). "
+            f"Plain, warm, no jargon.")
+
+
+def _gemma_local(prompt: str):
+    """Gemma 3 1B via Ollama on this machine (dev laptop / self-host)."""
+    r = HTTP.post("http://localhost:11434/api/generate", json={
+        "model": GEMMA_MODEL, "prompt": prompt, "stream": False}, timeout=60)
+    if r.status_code == 200 and r.json().get("response", "").strip():
+        return r.json()["response"].strip(), "gemma3-local"
+    raise RuntimeError("ollama-empty")
+
+
+def _gemma_hosted_hf(prompt: str):
+    """Gemma 3 1B via Hugging Face Inference API (needs HF_TOKEN env)."""
+    token = os.environ.get("HF_TOKEN", "")
+    if not token:
+        raise RuntimeError("no-hf-token")
+    r = httpx.post("https://api-inference.huggingface.co/models/google/gemma-3-1b-it",
+                   headers={"Authorization": f"Bearer {token}"},
+                   json={"inputs": prompt,
+                         "parameters": {"max_new_tokens": 120, "temperature": 0.7}},
+                   timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    text = ""
+    if isinstance(data, list) and data:
+        text = (data[0].get("generated_text", "") or "").strip()
+    elif isinstance(data, dict):
+        text = (data.get("generated_text", "") or "").strip()
+    if text.startswith(prompt):
+        text = text[len(prompt):].strip()
+    if not text:
+        raise RuntimeError("hf-empty")
+    return text, "gemma-hosted-hf"
+
+
+def _gemma_hosted_groq(prompt: str):
+    """Google Gemma via Groq's hosted API (needs GROQ_API_KEY env)."""
+    token = os.environ.get("GROQ_API_KEY", "")
+    if not token:
+        raise RuntimeError("no-groq-key")
+    r = httpx.post("https://api.groq.com/openai/v1/chat/completions",
+                   headers={"Authorization": f"Bearer {token}"},
+                   json={"model": "gemma2-9b-it",
+                         "messages": [{"role": "user", "content": prompt}],
+                         "max_tokens": 150, "temperature": 0.7},
+                   timeout=60)
+    r.raise_for_status()
+    text = (r.json()["choices"][0]["message"]["content"] or "").strip()
+    if not text:
+        raise RuntimeError("groq-empty")
+    return text, "gemma-hosted-groq"
+
+
 @app.post("/api/explain")
 def explain(req: ExplainReq):
     b = req.best or {}
-    # Try local Gemma via Ollama first (open-weight, on-device).
-    try:
-        r = HTTP.post("http://localhost:11434/api/generate", json={
-            "model": "gemma3:1b",
-            "prompt": (f"You are FieldDay, a friendly outdoors coach for allergy families. "
-                       f"In 2 short sentences, tell a parent why {b.get('time', 'this hour')} "
-                       f"in {req.city or 'their city'} is the best hour to take the kids outside "
-                       f"(score {b.get('combined', '?')}/100, flare risk {b.get('flare_risk', '?')}). "
-                       f"Plain, warm, no jargon."),
-            "stream": False}, timeout=60)
-        if r.status_code == 200:
-            return {"text": r.json().get("response", "").strip(),
-                    "source": "gemma3-local"}
-    except Exception:
-        pass
+    prompt = _gemma_prompt(req.city, b)
+    # Local open weights first, hosted open weights second, template last.
+    # Every path is labeled honestly in `source` so the UI can show it.
+    for fn in (_gemma_local, _gemma_hosted_hf, _gemma_hosted_groq):
+        try:
+            text, source = fn(prompt)
+            return {"text": text, "source": source}
+        except Exception:
+            continue
     t = (f"{b.get('time', 'This hour')} scores {b.get('combined', '?')}/100 in "
          f"{req.city or 'your city'} — mild temps, low rain odds, and your personal "
          f"flare risk is only {b.get('flare_risk', '?')}. Go now, keep it under an hour.")
